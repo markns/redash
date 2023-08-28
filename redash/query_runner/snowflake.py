@@ -1,3 +1,5 @@
+import re
+
 try:
     import snowflake.connector
 
@@ -33,8 +35,28 @@ TYPES_MAP = {
 }
 
 
+def snake_case(s):
+    return '_'.join(
+        re.sub('([A-Z][a-z]+)', r' \1',
+               re.sub('([A-Z]+)', r' \1',
+                      s.replace('-', ' '))).split()).lower()
+
+
+def parse_metadata(query):
+    match = re.match(r"/\*\s*(.*?)\s*\*/", query)
+    if match:
+        metadata_str = match.group(1)
+        return {snake_case(kv[0]): kv[1] for kv in
+                [kv_str.split(":", maxsplit=1) for kv_str in metadata_str.split(", ")]}
+
+
 class Snowflake(BaseSQLQueryRunner):
+    add_query_tags = False
     noop_query = "SELECT 1"
+
+    def __init__(self, configuration):
+        super().__init__(configuration)
+        self.add_query_tags = configuration.get("add_query_tags", False)
 
     @classmethod
     def configuration_schema(cls):
@@ -53,6 +75,11 @@ class Snowflake(BaseSQLQueryRunner):
                     "default": False,
                 },
                 "host": {"type": "string"},
+                "add_query_tags": {
+                    "type": "boolean",
+                    "title": "Add Redash metadata as query tag",
+                    "default": False,
+                },
             },
             "order": [
                 "account",
@@ -130,6 +157,11 @@ class Snowflake(BaseSQLQueryRunner):
         try:
             cursor.execute("USE WAREHOUSE {}".format(self.configuration["warehouse"]))
             cursor.execute("USE {}".format(self.configuration["database"]))
+
+            if self.add_query_tags:
+                metadata = parse_metadata(query)
+                if metadata:
+                    cursor.execute(f"ALTER SESSION SET QUERY_TAG='{json_dumps(metadata)}'")
 
             cursor.execute(query)
 
